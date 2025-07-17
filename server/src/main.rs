@@ -1,5 +1,5 @@
 use futures_util::{SinkExt, StreamExt};
-use protocol;
+use protocol::*;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
     accept_async,
@@ -39,8 +39,14 @@ async fn handle_connection(stream: tokio::net::TcpStream) {
             Ok(Message::Text(text)) => {
                 println!("Received message: {}", text);
 
-                // Echo-Antwort senden
-                if let Err(e) = ws_stream.send(Message::Text(text)).await {
+                // Antwort senden
+                let login_request = LoginResponse {
+                    token: Some(String::from("TestTKN")),
+                    error: None,
+                };
+                let json = serde_json::to_string(&login_request).unwrap();
+
+                if let Err(e) = ws_stream.send(Message::Text(Utf8Bytes::from(json))).await {
                     eprintln!("Error sending message: {}", e);
                     break;
                 }
