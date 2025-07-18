@@ -37,7 +37,7 @@ pub struct MessageRequest {
 // As acknowledgement: (receiver) -> server -> sender
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MessageResponse {
-    pub arrive_time: SystemTime,
+    pub arrive_time: Option<SystemTime>,
     pub error: Option<String>,
 }
 

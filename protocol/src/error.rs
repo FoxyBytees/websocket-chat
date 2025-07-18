@@ -1,7 +1,8 @@
 #[derive(Debug)]
 pub enum Error {
-    Tungstenite(tungstenite::Error),
-    SerdeJSON(serde_json::Error),
+    TokioMPSC(tokio::sync::mpsc::error::SendError<tungstenite::Message>),
+    Tungstenite(tungstenite::error::Error),
+    SerdeJSON(serde_json::error::Error),
     Disconnected(String),
     RegisterFailed(String),
     LoginFailed(String),
@@ -12,6 +13,7 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Error::TokioMPSC(err) => write!(f, "Tokio MPSC error: {}", err),
             Error::Tungstenite(err) => write!(f, "Tungstenite error: {}", err),
             Error::SerdeJSON(err) => write!(f, "Serde_JSON error: {}", err),
             Error::Disconnected(desc) => write!(f, "Disconnected: {}", desc),
@@ -33,6 +35,13 @@ impl std::error::Error for Error {
             // Other variants don't have a direct source
             _ => None,
         }
+    }
+}
+
+// Implement From trait so Tokio SendErrors can be propagated with '?'
+impl From<tokio::sync::mpsc::error::SendError<tungstenite::Message>> for Error {
+    fn from(err: tokio::sync::mpsc::error::SendError<tungstenite::Message>) -> Self {
+        Error::TokioMPSC(err)
     }
 }
 
