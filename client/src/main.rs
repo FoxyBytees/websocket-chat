@@ -3,6 +3,8 @@ use crate::chat_client::ChatClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
+
     // URL eines Echo-Servers, der JSON-Nachrichten zurücksendet
     let mut chat_client = ChatClient::new();
 
@@ -15,6 +17,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //chat_client.message("Foxy", "TestMSG").await?;
 
     chat_client.disconnect().await?;
+
+    loop {}
 
     Ok(())
 }

@@ -1,12 +1,14 @@
+use crate::Message;
+
 #[derive(Debug)]
 pub enum Error {
-    TokioMPSC(tokio::sync::mpsc::error::SendError<tungstenite::Message>),
+    TokioMPSC(tokio::sync::mpsc::error::SendError<Message>),
     Tungstenite(tungstenite::error::Error),
     SerdeJSON(serde_json::error::Error),
-    Disconnected(String),
-    RegisterFailed(String),
-    LoginFailed(String),
-    MessageFailed(String),
+    ServerError(String),
+    Disconnected,
+    Unauthenticated,
+    InvalidMessage,
 }
 
 // Implement Display trait so error can be formatted nicely
@@ -16,10 +18,10 @@ impl std::fmt::Display for Error {
             Error::TokioMPSC(err) => write!(f, "Tokio MPSC error: {}", err),
             Error::Tungstenite(err) => write!(f, "Tungstenite error: {}", err),
             Error::SerdeJSON(err) => write!(f, "Serde_JSON error: {}", err),
-            Error::Disconnected(desc) => write!(f, "Disconnected: {}", desc),
-            Error::RegisterFailed(desc) => write!(f, "Error while registering: {}", desc),
-            Error::LoginFailed(desc) => write!(f, "Error while logging in: {}", desc),
-            Error::MessageFailed(desc) => write!(f, "Error while sending message: {}", desc),
+            Error::ServerError(err) => write!(f, "Internal Server Error: {}", err),
+            Error::Disconnected => write!(f, "Disconnected: Please connect first"),
+            Error::Unauthenticated => write!(f, "Unauthenticated: Please login first"),
+            Error::InvalidMessage => write!(f, "Invalid Message: This should not have happened"),
         }
     }
 }
@@ -39,22 +41,22 @@ impl std::error::Error for Error {
 }
 
 // Implement From trait so Tokio SendErrors can be propagated with '?'
-impl From<tokio::sync::mpsc::error::SendError<tungstenite::Message>> for Error {
-    fn from(err: tokio::sync::mpsc::error::SendError<tungstenite::Message>) -> Self {
+impl From<tokio::sync::mpsc::error::SendError<Message>> for Error {
+    fn from(err: tokio::sync::mpsc::error::SendError<Message>) -> Self {
         Error::TokioMPSC(err)
     }
 }
 
 // Implement From trait so tungstenite Errors can be propagated with '?'
-impl From<tungstenite::Error> for Error {
-    fn from(err: tungstenite::Error) -> Self {
+impl From<tungstenite::error::Error> for Error {
+    fn from(err: tungstenite::error::Error) -> Self {
         Error::Tungstenite(err)
     }
 }
 
 // Implement From trait so serde_json Errors can be propagated with '?'
-impl From<serde_json::Error> for Error {
-    fn from(err: serde_json::Error) -> Self {
+impl From<serde_json::error::Error> for Error {
+    fn from(err: serde_json::error::Error) -> Self {
         Error::SerdeJSON(err)
     }
 }

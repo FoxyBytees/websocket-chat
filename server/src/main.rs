@@ -5,7 +5,6 @@ use tokio_tungstenite::{
     accept_async,
     tungstenite::{self, Utf8Bytes},
 };
-use tungstenite::protocol::Message;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,35 +33,42 @@ async fn handle_connection(stream: tokio::net::TcpStream) {
     };
 
     // Process data in loop
-    while let Some(msg) = ws_stream.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
+    while let Some(rx_result) = ws_stream.next().await {
+        match rx_result {
+            Ok(tungstenite::Message::Text(text)) => {
                 println!("Received message: {}", text);
 
                 // Send response
-                let login_request = LoginResponse {
+                let login_request = Message::UserLoginResponse(UserLoginResponse {
                     token: Some(String::from("TestTKN")),
                     error: None,
-                };
+                });
                 let json = serde_json::to_string(&login_request).unwrap();
 
-                if let Err(e) = ws_stream.send(Message::Text(Utf8Bytes::from(json))).await {
+                if let Err(e) = ws_stream
+                    .send(tungstenite::Message::Text(Utf8Bytes::from(json)))
+                    .await
+                {
                     eprintln!("Error sending message: {}", e);
                     break;
                 }
+
+                //ws_stream.close(None).await;
             }
-            Ok(Message::Binary(bin)) => {
+            Ok(tungstenite::Message::Binary(bin)) => {
                 println!("Received binary data of length: {}", bin.len());
             }
-            Ok(Message::Close(_)) => {
-                println!("Client requested to close the connection.");
+            Ok(tungstenite::Message::Close(_)) => {
+                println!("Client closed connection");
                 break;
             }
             Err(e) => {
                 eprintln!("Error reading message: {}", e);
                 break;
             }
-            _ => {} // Andere Nachrichtentypen ignorieren
+            _ => {} // Ignore other message types
         }
     }
+
+    println!("handle_connection: Shutting down");
 }
