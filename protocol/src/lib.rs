@@ -11,8 +11,8 @@ pub enum Message {
     ChatMessageRequest(ChatMessageRequest),
     ChatMessageResponse(ChatMessageResponse),
     ChatMessage(ChatMessage),
-    ClientDisconnect,
     ServerDisconnect,
+    ClientDisconnect,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

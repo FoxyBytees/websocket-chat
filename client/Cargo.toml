@@ -12,3 +12,5 @@ tokio = { version = "1.46.1", features = ["full"] }
 tokio-tungstenite = { version = "0.27.0", features = ["native-tls"] }
 log = { version = "0.4.27" }
 env_logger = "0.11.8"
+chrono = "0.4.41"
+colored = "3.0.0"

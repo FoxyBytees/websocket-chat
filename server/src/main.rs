@@ -1,3 +1,5 @@
+use std::time::SystemTime;
+
 use futures_util::{SinkExt, StreamExt};
 use protocol::*;
 use tokio::net::TcpListener;
@@ -36,34 +38,75 @@ async fn handle_connection(stream: tokio::net::TcpStream) {
     while let Some(rx_result) = ws_stream.next().await {
         match rx_result {
             Ok(tungstenite::Message::Text(text)) => {
-                println!("Received message: {}", text);
+                println!("handle_connection: Recv: {}", text);
 
-                // Send response
-                let login_request = Message::UserLoginResponse(UserLoginResponse {
-                    token: Some(String::from("TestTKN")),
-                    error: None,
-                });
-                let json = serde_json::to_string(&login_request).unwrap();
+                // Deserialize received message
+                match serde_json::from_str::<Message>(text.as_str()) {
+                    Ok(message) => match message {
+                        Message::ChatMessageRequest(msg_req) => {
+                            let response =
+                                Message::ChatMessageResponse(ChatMessageResponse { error: None });
 
-                if let Err(e) = ws_stream
-                    .send(tungstenite::Message::Text(Utf8Bytes::from(json)))
-                    .await
-                {
-                    eprintln!("Error sending message: {}", e);
-                    break;
+                            // Send response
+                            if let Err(e) = ws_stream
+                                .send(tungstenite::Message::Text(Utf8Bytes::from(
+                                    serde_json::to_string(&response).unwrap(),
+                                )))
+                                .await
+                            {
+                                eprintln!("handle_connection: {}", e);
+                                break;
+                            }
+
+                            let chat_msg = Message::ChatMessage(ChatMessage::from_request(
+                                msg_req,
+                                String::from("Server"),
+                            ));
+
+                            // Send response
+                            if let Err(e) = ws_stream
+                                .send(tungstenite::Message::Text(Utf8Bytes::from(
+                                    serde_json::to_string(&chat_msg).unwrap(),
+                                )))
+                                .await
+                            {
+                                eprintln!("handle_connection: {}", e);
+                                break;
+                            }
+                        }
+                        Message::UserLoginRequest(_) => {
+                            let response = Message::UserLoginResponse(UserLoginResponse {
+                                token: Some(String::from("TestTKN")),
+                                error: None,
+                            });
+
+                            // Send response
+                            if let Err(e) = ws_stream
+                                .send(tungstenite::Message::Text(Utf8Bytes::from(
+                                    serde_json::to_string(&response).unwrap(),
+                                )))
+                                .await
+                            {
+                                eprintln!("handle_connection: {}", e);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    },
+                    Err(err) => eprintln!("handle_connection: {}", err),
                 }
 
                 //ws_stream.close(None).await;
             }
             Ok(tungstenite::Message::Binary(bin)) => {
-                println!("Received binary data of length: {}", bin.len());
+                println!("handle_connection: Recv {} Byte", bin.len());
             }
             Ok(tungstenite::Message::Close(_)) => {
-                println!("Client closed connection");
+                println!("handle_connection: Client closed connection");
                 break;
             }
             Err(e) => {
-                eprintln!("Error reading message: {}", e);
+                eprintln!("handle_connection: {}", e);
                 break;
             }
             _ => {} // Ignore other message types

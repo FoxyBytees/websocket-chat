@@ -2,7 +2,7 @@ use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
-use log::{error, info};
+use log::{debug, error, info};
 use protocol::error::Error;
 use protocol::*;
 use std::time::SystemTime;
@@ -17,7 +17,6 @@ pub struct ChatClient {
     //TODO: Implement message queue in separate thread and notify methods if response arrives, use timout
     to_tx_handler: Option<Sender<Message>>,
     from_handler: Option<Receiver<Result<Message, Error>>>,
-    chat_msg_receiver: Option<Receiver<Result<Message, Error>>>,
     token: Option<String>,
 }
 
@@ -26,32 +25,37 @@ impl ChatClient {
         Self {
             to_tx_handler: None,
             from_handler: None,
-            chat_msg_receiver: None,
             token: None,
         }
     }
 
-    pub async fn connect<R>(&mut self, request: R) -> Result<(), Error>
+    pub async fn connect<R, F>(&mut self, request: R, on_receive: F) -> Result<(), Error>
     where
         R: IntoClientRequest + Unpin,
+        F: Fn(ChatMessage) + std::marker::Send + 'static,
     {
-        let connect_result = connect_async(request).await?;
-        let split_stream = connect_result.0.split();
+        let ws_stream = connect_async(request).await?.0;
+        let split_stream = ws_stream.split();
 
         // Sender needs to be cloned, Receiver needs to be moved
         let (to_tx_handler, from_method) = mpsc::channel::<Message>(32);
         let (to_method, from_handler) = mpsc::channel::<Result<Message, Error>>(32);
-        let (to_chat_msg_receiver, chat_msg_receiver) = mpsc::channel::<Result<Message, Error>>(32);
+        let (to_chat_msg_handler, chat_msg_receiver) = mpsc::channel::<Message>(32);
 
         self.from_handler = Some(from_handler);
         self.to_tx_handler = Some(to_tx_handler.clone());
-        self.chat_msg_receiver = Some(chat_msg_receiver);
 
-        tokio::spawn(tx_handler(split_stream.0, from_method, to_method.clone()));
+        tokio::spawn(chat_msg_handler(chat_msg_receiver, on_receive));
+        tokio::spawn(tx_handler(
+            split_stream.0,
+            from_method,
+            to_method.clone(),
+            to_chat_msg_handler.clone(),
+        ));
         tokio::spawn(rx_handler(
             split_stream.1,
             to_method,
-            to_chat_msg_receiver,
+            to_chat_msg_handler,
             to_tx_handler,
         ));
 
@@ -180,10 +184,10 @@ impl ChatClient {
 async fn rx_handler(
     mut rx_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     to_method: Sender<Result<Message, Error>>,
-    to_chat_msg_receiver: Sender<Result<Message, Error>>,
+    to_chat_msg_handler: Sender<Message>,
     to_tx_handler: Sender<Message>,
 ) {
-    // After stream is closed next() returns Error --> Better solution?
+    // After tx_stream is closed next() returns Error --> Better solution?
     while let Some(rx_result) = rx_stream.next().await {
         match rx_result {
             Ok(tungstenite::Message::Close(_)) => {
@@ -196,7 +200,7 @@ async fn rx_handler(
                 break;
             }
             Ok(tungstenite::Message::Text(text)) => {
-                info!("rx_handler: Recv: {}", text);
+                debug!("rx_handler: Recv: {}", text);
 
                 // Deserialize received message
                 match serde_json::from_str::<Message>(text.as_str()) {
@@ -204,7 +208,7 @@ async fn rx_handler(
                         // Check if message is text message meant for chat
                         if let Message::ChatMessage(_) = response {
                             // Send to chat message receiver
-                            if let Err(err) = to_chat_msg_receiver.send(Ok(response)).await {
+                            if let Err(err) = to_chat_msg_handler.send(response).await {
                                 error!("rx_handler: {}", err);
                             }
                         }
@@ -220,7 +224,7 @@ async fn rx_handler(
                 error!("rx_handler: {}", err); // Error while reading rx_stream
                 break;
             }
-            _ => info!("rx_handler: Recv: Unknown message type, ignoring"), // Ignore unknown message types
+            _ => debug!("rx_handler: Recv: Unknown message type, ignoring"), // Ignore unknown message types
         }
     }
 
@@ -231,11 +235,17 @@ async fn tx_handler(
     mut tx_stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
     mut from_method: Receiver<Message>,
     to_method: Sender<Result<Message, Error>>,
+    to_chat_msg_handler: Sender<Message>,
 ) {
     while let Some(message) = from_method.recv().await {
         match message {
             Message::ServerDisconnect => {
                 info!("tx_handler: Server closed connection");
+
+                // Notify chat_msg_handler to shut down
+                if let Err(err) = to_chat_msg_handler.send(Message::ServerDisconnect).await {
+                    error!("tx_handler: {}", err);
+                }
                 break;
             }
             Message::ClientDisconnect => {
@@ -256,12 +266,17 @@ async fn tx_handler(
                         }
                     }
                 };
+
+                // Notify chat_msg_handler to shut down
+                if let Err(err) = to_chat_msg_handler.send(Message::ClientDisconnect).await {
+                    error!("tx_handler: {}", err);
+                }
                 break;
             }
             _ => {
                 // Serialize message to be sent
                 let json_string = serde_json::to_string(&message).unwrap();
-                info!("tx_handler: Send: {}", json_string);
+                debug!("tx_handler: Send: {}", json_string);
                 let tungstenite_message = tungstenite::Message::text(json_string);
 
                 // Sending message to server
@@ -276,4 +291,20 @@ async fn tx_handler(
     }
 
     info!("tx_handler: Shutting down");
+}
+
+async fn chat_msg_handler<F>(mut chat_msg_receiver: Receiver<Message>, on_chat_msg_recv: F)
+where
+    F: Fn(ChatMessage),
+{
+    while let Some(message) = chat_msg_receiver.recv().await {
+        match message {
+            Message::ChatMessage(chat_msg) => on_chat_msg_recv(chat_msg),
+            Message::ServerDisconnect => break,
+            Message::ClientDisconnect => break,
+            _ => debug!("rx_handler: Recv: Unknown message type, ignoring"), // Ignore unknown message types
+        }
+    }
+
+    info!("chat_msg_handler: Shutting down");
 }
