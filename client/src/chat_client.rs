@@ -37,12 +37,12 @@ impl ChatClient {
         }
     }
 
-    pub async fn connect<R, F>(&mut self, request: R, on_receive: F) -> Result<(), Error>
+    pub async fn connect<R, F>(&mut self, request: R, on_receive: F) -> Result<&mut Self, Error>
     where
         R: IntoClientRequest + Unpin,
         F: Fn(ChatMessage) + std::marker::Send + 'static,
     {
-        if !self.is_disconnected() {
+        if !self.is_done() {
             return Err(Error::Connected);
         }
 
@@ -79,11 +79,11 @@ impl ChatClient {
             to_chat_msg_handler,
         )));
 
-        Ok(())
+        Ok(self)
     }
 
-    pub async fn disconnect(&mut self) -> Result<(), Error> {
-        if self.is_disconnected() {
+    pub async fn disconnect(&mut self) -> Result<&mut Self, Error> {
+        if self.is_done() {
             return Err(Error::Disconnected);
         }
 
@@ -93,15 +93,15 @@ impl ChatClient {
         to_tx_handler.send(Message::Disconnect).await?;
 
         match from_handler.recv().await {
-            Some(Ok(Message::Disconnect)) => Ok(()),
+            Some(Ok(Message::Disconnect)) => Ok(self),
             Some(Err(err)) => Err(err),
             Some(_) => Err(Error::InvalidMessage),
             None => Err(Error::InvalidMessage),
         }
     }
 
-    pub async fn register(&mut self, username: &str, password: &str) -> Result<(), Error> {
-        if self.is_disconnected() {
+    pub async fn register(&mut self, username: &str, password: &str) -> Result<&mut Self, Error> {
+        if self.is_done() {
             return Err(Error::Disconnected);
         }
 
@@ -122,7 +122,7 @@ impl ChatClient {
                 if let Some(desc) = user_register_resp.error {
                     Err(Error::ServerError(desc))
                 } else {
-                    Ok(())
+                    Ok(self)
                 }
             }
             Some(Err(err)) => Err(err),
@@ -131,8 +131,8 @@ impl ChatClient {
         }
     }
 
-    pub async fn login(&mut self, username: &str, password: &str) -> Result<(), Error> {
-        if self.is_disconnected() {
+    pub async fn login(&mut self, username: &str, password: &str) -> Result<&mut Self, Error> {
+        if self.is_done() {
             return Err(Error::Disconnected);
         }
 
@@ -154,7 +154,7 @@ impl ChatClient {
                     Err(Error::ServerError(desc))
                 } else if let Some(token) = user_login_resp.token {
                     self.token = Some(token);
-                    Ok(())
+                    Ok(self)
                 } else {
                     Err(Error::InvalidMessage)
                 }
@@ -165,8 +165,8 @@ impl ChatClient {
         }
     }
 
-    pub async fn message(&mut self, dest_user: &str, message: &str) -> Result<(), Error> {
-        if self.is_disconnected() {
+    pub async fn message(&mut self, dest_user: &str, message: &str) -> Result<&mut Self, Error> {
+        if self.is_done() {
             return Err(Error::Disconnected);
         }
 
@@ -194,7 +194,7 @@ impl ChatClient {
                 if let Some(desc) = chat_msg_resp.error {
                     Err(Error::ServerError(desc))
                 } else {
-                    Ok(())
+                    Ok(self)
                 }
             }
             Some(Err(err)) => Err(err),
@@ -203,7 +203,7 @@ impl ChatClient {
         }
     }
 
-    pub fn is_disconnected(&mut self) -> bool {
+    pub fn is_done(&mut self) -> bool {
         let chat_msg_join_handle = self.chat_msg_join_handle.as_mut();
         let tx_join_handle = self.tx_join_handle.as_mut();
         let rx_join_handle = self.rx_join_handle.as_mut();
@@ -214,7 +214,7 @@ impl ChatClient {
     }
 
     pub async fn wait_done(&mut self) -> Result<(), JoinError> {
-        if !self.is_disconnected() {
+        if !self.is_done() {
             if let Some(chat_msg_join_handle) = self.chat_msg_join_handle.as_mut() {
                 if let Err(err) = chat_msg_join_handle.await {
                     if !err.is_cancelled() {

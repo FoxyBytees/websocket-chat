@@ -4,10 +4,7 @@ use protocol::*;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
     accept_async,
-    tungstenite::{
-        self, Utf8Bytes,
-        protocol::{CloseFrame, frame::coding::CloseCode},
-    },
+    tungstenite::{self, Utf8Bytes},
 };
 
 #[tokio::main]

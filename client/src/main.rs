@@ -31,9 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chat_client.message("Foxy", "TestMSG").await?;
     }
 
-    chat_client.disconnect().await?;
-
-    chat_client.wait_done().await?;
+    chat_client.disconnect().await?.wait_done().await?;
 
     Ok(())
 }
