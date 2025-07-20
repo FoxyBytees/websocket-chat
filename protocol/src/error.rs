@@ -2,10 +2,12 @@ use crate::Message;
 
 #[derive(Debug)]
 pub enum Error {
+    IOError(std::io::Error),
     TokioMPSC(tokio::sync::mpsc::error::SendError<Message>),
     Tungstenite(tungstenite::error::Error),
     SerdeJSON(serde_json::error::Error),
     ServerError(String),
+    Connected,
     Disconnected,
     Unauthenticated,
     InvalidMessage,
@@ -15,10 +17,12 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Error::IOError(err) => write!(f, "IO Error: {}", err),
             Error::TokioMPSC(err) => write!(f, "Tokio MPSC error: {}", err),
             Error::Tungstenite(err) => write!(f, "Tungstenite error: {}", err),
             Error::SerdeJSON(err) => write!(f, "Serde_JSON error: {}", err),
             Error::ServerError(err) => write!(f, "Internal Server Error: {}", err),
+            Error::Connected => write!(f, "Connected: Please disconnect first"),
             Error::Disconnected => write!(f, "Disconnected: Please connect first"),
             Error::Unauthenticated => write!(f, "Unauthenticated: Please login first"),
             Error::InvalidMessage => write!(f, "Invalid Message: This should not have happened"),
@@ -37,6 +41,13 @@ impl std::error::Error for Error {
             // Other variants don't have a direct source
             _ => None,
         }
+    }
+}
+
+// Implement From trait so IO Errors can be propagated with '?'
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error::IOError(err)
     }
 }
 

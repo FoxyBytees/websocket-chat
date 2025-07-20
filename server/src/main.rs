@@ -1,15 +1,19 @@
-use std::time::SystemTime;
-
+mod chat_server;
 use futures_util::{SinkExt, StreamExt};
 use protocol::*;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
     accept_async,
-    tungstenite::{self, Utf8Bytes},
+    tungstenite::{
+        self, Utf8Bytes,
+        protocol::{CloseFrame, frame::coding::CloseCode},
+    },
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
+
     let addr = "0.0.0.0:8080";
     let listener = TcpListener::bind(&addr).await?;
 
@@ -73,6 +77,8 @@ async fn handle_connection(stream: tokio::net::TcpStream) {
                                 eprintln!("handle_connection: {}", e);
                                 break;
                             }
+
+                            //ws_stream.close(None).await;
                         }
                         Message::UserLoginRequest(_) => {
                             let response = Message::UserLoginResponse(UserLoginResponse {
@@ -95,8 +101,6 @@ async fn handle_connection(stream: tokio::net::TcpStream) {
                     },
                     Err(err) => eprintln!("handle_connection: {}", err),
                 }
-
-                //ws_stream.close(None).await;
             }
             Ok(tungstenite::Message::Binary(bin)) => {
                 println!("handle_connection: Recv {} Byte", bin.len());

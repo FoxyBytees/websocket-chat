@@ -6,23 +6,31 @@ use log::{debug, error, info};
 use protocol::error::Error;
 use protocol::*;
 use std::time::SystemTime;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::{net::TcpStream, sync::oneshot, task::JoinHandle};
+use tokio::{
+    sync::mpsc::{self},
+    task::JoinError,
+};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async,
     tungstenite::{self, client::IntoClientRequest},
 };
 
 pub struct ChatClient {
-    //TODO: Implement message queue in separate thread and notify methods if response arrives, use timout
-    to_tx_handler: Option<Sender<Message>>,
-    from_handler: Option<Receiver<Result<Message, Error>>>,
+    chat_msg_join_handle: Option<JoinHandle<()>>,
+    tx_join_handle: Option<JoinHandle<()>>,
+    rx_join_handle: Option<JoinHandle<()>>,
+    to_tx_handler: Option<mpsc::Sender<Message>>,
+    from_handler: Option<mpsc::Receiver<Result<Message, Error>>>,
     token: Option<String>,
 }
 
 impl ChatClient {
     pub fn new() -> Self {
         Self {
+            chat_msg_join_handle: None,
+            tx_join_handle: None,
+            rx_join_handle: None,
             to_tx_handler: None,
             from_handler: None,
             token: None,
@@ -34,10 +42,17 @@ impl ChatClient {
         R: IntoClientRequest + Unpin,
         F: Fn(ChatMessage) + std::marker::Send + 'static,
     {
+        if !self.is_disconnected() {
+            return Err(Error::Connected);
+        }
+
         let ws_stream = connect_async(request).await?.0;
         let split_stream = ws_stream.split();
 
         // Sender needs to be cloned, Receiver needs to be moved
+        let (close_tx_handler, tx_close_signal) = oneshot::channel::<()>();
+        let (close_rx_handler, rx_close_signal) = oneshot::channel::<()>();
+
         let (to_tx_handler, from_method) = mpsc::channel::<Message>(32);
         let (to_method, from_handler) = mpsc::channel::<Result<Message, Error>>(32);
         let (to_chat_msg_handler, chat_msg_receiver) = mpsc::channel::<Message>(32);
@@ -45,106 +60,113 @@ impl ChatClient {
         self.from_handler = Some(from_handler);
         self.to_tx_handler = Some(to_tx_handler.clone());
 
-        tokio::spawn(chat_msg_handler(chat_msg_receiver, on_receive));
-        tokio::spawn(tx_handler(
+        self.chat_msg_join_handle = Some(tokio::spawn(chat_msg_handler(
+            chat_msg_receiver,
+            on_receive,
+        )));
+        self.tx_join_handle = Some(tokio::spawn(tx_handler(
             split_stream.0,
+            tx_close_signal,
+            close_rx_handler,
             from_method,
             to_method.clone(),
-            to_chat_msg_handler.clone(),
-        ));
-        tokio::spawn(rx_handler(
+        )));
+        self.rx_join_handle = Some(tokio::spawn(rx_handler(
             split_stream.1,
+            rx_close_signal,
+            close_tx_handler,
             to_method,
             to_chat_msg_handler,
-            to_tx_handler,
-        ));
+        )));
 
         Ok(())
     }
 
     pub async fn disconnect(&mut self) -> Result<(), Error> {
-        if self.to_tx_handler.is_none() || self.from_handler.is_none() {
+        if self.is_disconnected() {
             return Err(Error::Disconnected);
         }
 
         let to_tx_handler = self.to_tx_handler.clone().unwrap();
         let from_handler = self.from_handler.as_mut().unwrap();
 
-        to_tx_handler.send(Message::ClientDisconnect).await?;
+        to_tx_handler.send(Message::Disconnect).await?;
 
-        if let Message::ClientDisconnect = from_handler.recv().await.unwrap()? {
-            self.from_handler = None;
-            self.to_tx_handler = None;
-
-            Ok(())
-        } else {
-            Err(Error::InvalidMessage)
+        match from_handler.recv().await {
+            Some(Ok(Message::Disconnect)) => Ok(()),
+            Some(Err(err)) => Err(err),
+            Some(_) => Err(Error::InvalidMessage),
+            None => Err(Error::InvalidMessage),
         }
     }
 
     pub async fn register(&mut self, username: &str, password: &str) -> Result<(), Error> {
-        if self.to_tx_handler.is_none() || self.from_handler.is_none() {
+        if self.is_disconnected() {
             return Err(Error::Disconnected);
         }
 
         let to_tx_handler = self.to_tx_handler.clone().unwrap();
         let from_handler = self.from_handler.as_mut().unwrap();
 
-        let register_request = UserRegisterRequest {
+        let user_register_req = UserRegisterRequest {
             username: String::from(username),
             password: String::from(password),
         };
 
         to_tx_handler
-            .send(Message::UserRegisterRequest(register_request))
+            .send(Message::UserRegisterRequest(user_register_req))
             .await?;
 
-        if let Message::UserRegisterResponse(register_response) =
-            from_handler.recv().await.unwrap()?
-        {
-            if let Some(desc) = register_response.error {
-                Err(Error::ServerError(desc))
-            } else {
-                Ok(())
+        match from_handler.recv().await {
+            Some(Ok(Message::UserRegisterResponse(user_register_resp))) => {
+                if let Some(desc) = user_register_resp.error {
+                    Err(Error::ServerError(desc))
+                } else {
+                    Ok(())
+                }
             }
-        } else {
-            Err(Error::InvalidMessage)
+            Some(Err(err)) => Err(err),
+            Some(_) => Err(Error::InvalidMessage),
+            None => Err(Error::InvalidMessage),
         }
     }
 
     pub async fn login(&mut self, username: &str, password: &str) -> Result<(), Error> {
-        if self.to_tx_handler.is_none() || self.from_handler.is_none() {
+        if self.is_disconnected() {
             return Err(Error::Disconnected);
         }
 
         let to_tx_handler = self.to_tx_handler.clone().unwrap();
         let from_handler = self.from_handler.as_mut().unwrap();
 
-        let login_request = UserLoginRequest {
+        let user_login_req = UserLoginRequest {
             username: String::from(username),
             password: String::from(password),
         };
 
         to_tx_handler
-            .send(Message::UserLoginRequest(login_request))
+            .send(Message::UserLoginRequest(user_login_req))
             .await?;
 
-        if let Message::UserLoginResponse(login_response) = from_handler.recv().await.unwrap()? {
-            if let Some(desc) = login_response.error {
-                Err(Error::ServerError(desc))
-            } else if let Some(token) = login_response.token {
-                self.token = Some(token);
-                Ok(())
-            } else {
-                Err(Error::InvalidMessage)
+        match from_handler.recv().await {
+            Some(Ok(Message::UserLoginResponse(user_login_resp))) => {
+                if let Some(desc) = user_login_resp.error {
+                    Err(Error::ServerError(desc))
+                } else if let Some(token) = user_login_resp.token {
+                    self.token = Some(token);
+                    Ok(())
+                } else {
+                    Err(Error::InvalidMessage)
+                }
             }
-        } else {
-            Err(Error::InvalidMessage)
+            Some(Err(err)) => Err(err),
+            Some(_) => Err(Error::InvalidMessage),
+            None => Err(Error::InvalidMessage),
         }
     }
 
     pub async fn message(&mut self, dest_user: &str, message: &str) -> Result<(), Error> {
-        if self.to_tx_handler.is_none() || self.from_handler.is_none() {
+        if self.is_disconnected() {
             return Err(Error::Disconnected);
         }
 
@@ -156,7 +178,7 @@ impl ChatClient {
         let from_handler = self.from_handler.as_mut().unwrap();
         let token = self.token.as_ref().unwrap();
 
-        let chat_msg_request = ChatMessageRequest {
+        let chat_msg_req = ChatMessageRequest {
             token: token.clone(),
             dest_user: String::from(dest_user),
             send_time: SystemTime::now(),
@@ -164,128 +186,121 @@ impl ChatClient {
         };
 
         to_tx_handler
-            .send(Message::ChatMessageRequest(chat_msg_request))
+            .send(Message::ChatMessageRequest(chat_msg_req))
             .await?;
 
-        if let Message::ChatMessageResponse(chat_msg_response) =
-            from_handler.recv().await.unwrap()?
-        {
-            if let Some(desc) = chat_msg_response.error {
-                Err(Error::ServerError(desc))
-            } else {
-                Ok(())
-            }
-        } else {
-            Err(Error::InvalidMessage)
-        }
-    }
-}
-
-async fn rx_handler(
-    mut rx_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-    to_method: Sender<Result<Message, Error>>,
-    to_chat_msg_handler: Sender<Message>,
-    to_tx_handler: Sender<Message>,
-) {
-    // After tx_stream is closed next() returns Error --> Better solution?
-    while let Some(rx_result) = rx_stream.next().await {
-        match rx_result {
-            Ok(tungstenite::Message::Close(_)) => {
-                info!("rx_handler: Server closed connection");
-
-                // Notify tx_handler to shut down
-                if let Err(err) = to_tx_handler.send(Message::ServerDisconnect).await {
-                    error!("rx_handler: {}", err);
-                };
-                break;
-            }
-            Ok(tungstenite::Message::Text(text)) => {
-                debug!("rx_handler: Recv: {}", text);
-
-                // Deserialize received message
-                match serde_json::from_str::<Message>(text.as_str()) {
-                    Ok(response) => {
-                        // Check if message is text message meant for chat
-                        if let Message::ChatMessage(_) = response {
-                            // Send to chat message receiver
-                            if let Err(err) = to_chat_msg_handler.send(response).await {
-                                error!("rx_handler: {}", err);
-                            }
-                        }
-                        // Send message back to method
-                        else if let Err(err) = to_method.send(Ok(response)).await {
-                            error!("rx_handler: {}", err);
-                        }
-                    }
-                    Err(err) => error!("rx_handler: {}", err), // Error while deserializing, no one to notify
+        match from_handler.recv().await {
+            Some(Ok(Message::ChatMessageResponse(chat_msg_resp))) => {
+                if let Some(desc) = chat_msg_resp.error {
+                    Err(Error::ServerError(desc))
+                } else {
+                    Ok(())
                 }
             }
-            Err(err) => {
-                error!("rx_handler: {}", err); // Error while reading rx_stream
-                break;
-            }
-            _ => debug!("rx_handler: Recv: Unknown message type, ignoring"), // Ignore unknown message types
+            Some(Err(err)) => Err(err),
+            Some(_) => Err(Error::InvalidMessage),
+            None => Err(Error::InvalidMessage),
         }
     }
 
-    info!("rx_handler: Shutting down");
+    pub fn is_disconnected(&mut self) -> bool {
+        let chat_msg_join_handle = self.chat_msg_join_handle.as_mut();
+        let tx_join_handle = self.tx_join_handle.as_mut();
+        let rx_join_handle = self.rx_join_handle.as_mut();
+
+        (chat_msg_join_handle.is_none() || chat_msg_join_handle.unwrap().is_finished())
+            && (tx_join_handle.is_none() || tx_join_handle.unwrap().is_finished())
+            && (rx_join_handle.is_none() || rx_join_handle.unwrap().is_finished())
+    }
+
+    pub async fn wait_done(&mut self) -> Result<(), JoinError> {
+        if !self.is_disconnected() {
+            if let Some(chat_msg_join_handle) = self.chat_msg_join_handle.as_mut() {
+                if let Err(err) = chat_msg_join_handle.await {
+                    if !err.is_cancelled() {
+                        return Err(err);
+                    }
+                }
+            };
+
+            if let Some(tx_join_handle) = self.tx_join_handle.as_mut() {
+                if let Err(err) = tx_join_handle.await {
+                    if !err.is_cancelled() {
+                        return Err(err);
+                    }
+                }
+            };
+
+            if let Some(rx_join_handle) = self.rx_join_handle.as_mut() {
+                if let Err(err) = rx_join_handle.await {
+                    if !err.is_cancelled() {
+                        return Err(err);
+                    }
+                }
+            };
+        }
+
+        Ok(())
+    }
 }
 
 async fn tx_handler(
     mut tx_stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
-    mut from_method: Receiver<Message>,
-    to_method: Sender<Result<Message, Error>>,
-    to_chat_msg_handler: Sender<Message>,
+    mut tx_close_signal: oneshot::Receiver<()>,
+    close_rx_handler: oneshot::Sender<()>,
+    mut from_method: mpsc::Receiver<Message>,
+    to_method: mpsc::Sender<Result<Message, Error>>,
 ) {
-    while let Some(message) = from_method.recv().await {
-        match message {
-            Message::ServerDisconnect => {
-                info!("tx_handler: Server closed connection");
-
-                // Notify chat_msg_handler to shut down
-                if let Err(err) = to_chat_msg_handler.send(Message::ServerDisconnect).await {
-                    error!("tx_handler: {}", err);
-                }
-                break;
-            }
-            Message::ClientDisconnect => {
-                info!("tx_handler: Client is closing connection");
-
-                // Sending CloseFrame is handled by tungstenite
-                match tx_stream.close().await {
-                    Ok(_) => {
-                        // Successfully closed stream, server answers with CloseFrame, notify method
-                        if let Err(err) = to_method.send(Ok(Message::ClientDisconnect)).await {
-                            error!("tx_handler: {}", err);
-                        }
-                    }
-                    Err(err) => {
-                        // Error while closing stream, notify method
-                        if let Err(err) = to_method.send(Err(Error::Tungstenite(err))).await {
-                            error!("tx_handler: {}", err);
-                        }
-                    }
-                };
-
-                // Notify chat_msg_handler to shut down
-                if let Err(err) = to_chat_msg_handler.send(Message::ClientDisconnect).await {
-                    error!("tx_handler: {}", err);
-                }
-                break;
-            }
-            _ => {
-                // Serialize message to be sent
-                let json_string = serde_json::to_string(&message).unwrap();
-                debug!("tx_handler: Send: {}", json_string);
-                let tungstenite_message = tungstenite::Message::text(json_string);
-
-                // Sending message to server
-                if let Err(err) = tx_stream.send(tungstenite_message).await {
-                    if let Err(err) = to_method.send(Err(Error::Tungstenite(err))).await {
-                        error!("tx_handler: {}", err); // Error while writing to tx_stream, notify method
-                    }
+    loop {
+        tokio::select! {
+        _ = &mut tx_close_signal => break,
+        received = from_method.recv() => {
+                if received.is_none() {
                     break;
-                };
+                }
+
+                match received.unwrap() {
+                    Message::Disconnect => {
+                        info!("tx_handler: Closing connection");
+
+                        // Sending CloseFrame is handled by tungstenite
+                        match tx_stream.close().await {
+                            Ok(_) => {
+                                // Handshake successful, notify method
+                                if let Err(err) = to_method.send(Ok(Message::Disconnect)).await {
+                                    error!("tx_handler: {}", err);
+                                }
+                            }
+                            Err(err) => {
+                                // Error while closing, notify method
+                                if let Err(err) = to_method.send(Err(Error::Tungstenite(err))).await {
+                                    error!("tx_handler: {}", err);
+                                }
+                            }
+                        };
+
+                        // Signal rx_handler to shut down
+                        if close_rx_handler.send(()).is_err() {
+                            error!("rx_handler: Could signal tx_handler to stop");
+                        }
+
+                        break;
+                    }
+                    message => {
+                        // Serialize message to be sent
+                        let json_string = serde_json::to_string(&message).unwrap();
+                        debug!("tx_handler: Send: {}", json_string);
+                        let message = tungstenite::Message::text(json_string);
+
+                        // Sending message to server
+                        if let Err(err) = tx_stream.send(message).await {
+                            if let Err(err) = to_method.send(Err(Error::Tungstenite(err))).await {
+                                error!("tx_handler: {}", err); // Error while writing to tx_stream, notify method
+                            }
+                            break;
+                        };
+                    }
+                }
             }
         }
     }
@@ -293,16 +308,79 @@ async fn tx_handler(
     info!("tx_handler: Shutting down");
 }
 
-async fn chat_msg_handler<F>(mut chat_msg_receiver: Receiver<Message>, on_chat_msg_recv: F)
+async fn rx_handler(
+    mut rx_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    mut rx_close_signal: oneshot::Receiver<()>,
+    close_tx_handler: oneshot::Sender<()>,
+    to_method: mpsc::Sender<Result<Message, Error>>,
+    to_chat_msg_handler: mpsc::Sender<Message>,
+) {
+    loop {
+        tokio::select! {
+            _ = &mut rx_close_signal => break,
+            received = rx_stream.next() => {
+                if received.is_none() {
+                    break;
+                }
+
+                match received.unwrap() {
+                    Ok(tungstenite::Message::Text(text)) => {
+                        debug!("rx_handler: Recv: {}", text);
+
+                        // Deserialize received message
+                        match serde_json::from_str::<Message>(text.as_str()) {
+                            Ok(message) => {
+                                // Check if message is text message meant for chat
+                                if let Message::ChatMessage(_) = message {
+                                    // Send to chat message receiver
+                                    if let Err(err) = to_chat_msg_handler.send(message).await {
+                                        error!("rx_handler: {}", err);
+                                    }
+                                }
+                                // Send message back to method
+                                else if let Err(err) = to_method.send(Ok(message)).await {
+                                    error!("rx_handler: {}", err);
+                                }
+                            }
+                            Err(err) => error!("rx_handler: {}", err), // Error while deserializing, no one to notify
+                        }
+                    }
+                    Ok(tungstenite::Message::Close(_)) => {
+                        debug!("rx_handler: Recv CloseFrame");
+
+                        // Signal tx_handler to shut down
+                        if close_tx_handler.send(()).is_err() {
+                            error!("rx_handler: Could signal tx_handler to stop");
+                        }
+                        break;
+                    }
+                    Err(err) => {
+                        error!("rx_handler: {}", err); // Error while reading rx_stream
+                        break;
+                    }
+                    _ => debug!("rx_handler: Recv: Unknown message type, ignoring"), // Ignore unknown message types
+                }
+            }
+        }
+    }
+
+    // Notify chat_msg_handler to shut down
+    if let Err(err) = to_chat_msg_handler.send(Message::Disconnect).await {
+        error!("rx_handler: {}", err);
+    }
+
+    info!("rx_handler: Shutting down");
+}
+
+async fn chat_msg_handler<F>(mut chat_msg_receiver: mpsc::Receiver<Message>, on_chat_msg_recv: F)
 where
     F: Fn(ChatMessage),
 {
     while let Some(message) = chat_msg_receiver.recv().await {
         match message {
             Message::ChatMessage(chat_msg) => on_chat_msg_recv(chat_msg),
-            Message::ServerDisconnect => break,
-            Message::ClientDisconnect => break,
-            _ => debug!("rx_handler: Recv: Unknown message type, ignoring"), // Ignore unknown message types
+            Message::Disconnect => break,
+            _ => debug!("chat_msg_handler: Recv: Unknown message type, ignoring"), // Ignore unknown message types
         }
     }
 

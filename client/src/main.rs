@@ -7,7 +7,6 @@ use colored::*;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    // URL eines Echo-Servers, der JSON-Nachrichten zurücksendet
     let mut chat_client = ChatClient::new();
 
     chat_client
@@ -28,11 +27,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     chat_client.login("Foxy", "TestPW").await?;
 
-    for _ in 0..5 {
+    for _ in 0..1 {
         chat_client.message("Foxy", "TestMSG").await?;
     }
 
     chat_client.disconnect().await?;
+
+    chat_client.wait_done().await?;
 
     Ok(())
 }
