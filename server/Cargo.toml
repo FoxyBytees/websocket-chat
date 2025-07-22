@@ -13,3 +13,5 @@ log = { version = "0.4.27" }
 env_logger = "0.11.8"
 chrono = "0.4.41"
 colored = "3.0.0"
+tokio-util = "0.7.15"
+uuid = { version = "1.17.0", features = ["v4"] }

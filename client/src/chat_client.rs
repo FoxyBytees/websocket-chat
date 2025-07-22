@@ -118,8 +118,8 @@ impl ChatClient {
             .await?;
 
         match from_handler.recv().await {
-            Some(Ok(Message::UserRegisterResponse(user_register_resp))) => {
-                if let Some(desc) = user_register_resp.error {
+            Some(Ok(Message::UserRegisterResponse(user_register_res))) => {
+                if let Some(desc) = user_register_res.error {
                     Err(Error::ServerError(desc))
                 } else {
                     Ok(self)
@@ -149,10 +149,10 @@ impl ChatClient {
             .await?;
 
         match from_handler.recv().await {
-            Some(Ok(Message::UserLoginResponse(user_login_resp))) => {
-                if let Some(desc) = user_login_resp.error {
+            Some(Ok(Message::UserLoginResponse(user_login_res))) => {
+                if let Some(desc) = user_login_res.error {
                     Err(Error::ServerError(desc))
-                } else if let Some(token) = user_login_resp.token {
+                } else if let Some(token) = user_login_res.token {
                     self.token = Some(token);
                     Ok(self)
                 } else {
@@ -190,8 +190,8 @@ impl ChatClient {
             .await?;
 
         match from_handler.recv().await {
-            Some(Ok(Message::ChatMessageResponse(chat_msg_resp))) => {
-                if let Some(desc) = chat_msg_resp.error {
+            Some(Ok(Message::ChatMessageResponse(chat_msg_res))) => {
+                if let Some(desc) = chat_msg_res.error {
                     Err(Error::ServerError(desc))
                 } else {
                     Ok(self)
