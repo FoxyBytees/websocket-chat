@@ -50,7 +50,7 @@ impl ChatServer {
         }
     }
 
-    pub async fn listen<A>(&mut self, address: A) -> Result<&mut Self, Error>
+    pub fn listen<A>(&mut self, address: A) -> Result<&mut Self, Error>
     where
         A: ToSocketAddrs + std::marker::Send + 'static,
     {
@@ -59,6 +59,12 @@ impl ChatServer {
             self.connections.clone(),
             self.cancellation_token.clone(),
         )));
+
+        Ok(self)
+    }
+
+    pub fn quit(&mut self) -> Result<&mut Self, Error> {
+        self.cancellation_token.cancel();
 
         Ok(self)
     }
@@ -184,7 +190,7 @@ async fn connection_handler(
                                     }
                                 }
                                 Message::UserLoginRequest(user_login_req) => {
-                                    let user_register_res = match connections.write() {
+                                    let user_login_res = match connections.write() {
                                         Ok(mut write_guard) => match write_guard.get_mut(&user_login_req.username) {
                                                 Some(account_info) => {
                                                     account_info.token = Some(Uuid::new_v4().to_string());
@@ -198,7 +204,7 @@ async fn connection_handler(
                                     // Send response
                                     if let Err(err) = ws_stream
                                         .send(tungstenite::Message::Text(Utf8Bytes::from(
-                                            serde_json::to_string(&user_register_res).unwrap(),
+                                            serde_json::to_string(&Message::UserLoginResponse(user_login_res)).unwrap(),
                                         )))
                                         .await
                                     {

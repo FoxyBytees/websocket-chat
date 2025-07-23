@@ -8,10 +8,10 @@
             "type": "cppvsdbg", // THIS IS THE KEY: Use the MSVC debugger type
             "request": "launch",
             "name": "Debug Client (MSVC)",
-            "program": "${workspaceFolder}\\client\\target\\debug\\client.exe", // Path to your compiled executable
+            "program": "${workspaceFolder}\\server\\target\\debug\\server.exe", // Path to your compiled executable
             "args": [],
             "cwd": "${workspaceFolder}", // Or "${workspaceFolder}/client"
-            "preLaunchTask": "rust: cargo build",
+            "preLaunchTask": "cargo build server",
             "console": "integratedTerminal",
             "environment": [{"name": "RUST_LOG", "value": "info"}]
         }

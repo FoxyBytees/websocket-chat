@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    //chat_client.register("Foxy", "TestPW").await?;
+    chat_client.register("Foxy", "TestPW").await?;
 
     chat_client.login("Foxy", "TestPW").await?;
 

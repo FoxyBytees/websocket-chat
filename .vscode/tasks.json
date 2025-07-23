@@ -8,9 +8,21 @@
 				"$rustc"
 			],
 			"group": "build",
-			"label": "rust: cargo build",
+			"label": "cargo build client",
 			"options": {
                 "cwd": "${workspaceFolder}\\client",
+            }
+		},
+		{
+			"type": "shell",
+			"command": "cargo build --bin server --package server",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "cargo build server",
+			"options": {
+                "cwd": "${workspaceFolder}\\server",
             }
 		}
 	]
