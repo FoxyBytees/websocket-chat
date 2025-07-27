@@ -1,42 +1,24 @@
-use futures_util::{
-    SinkExt, StreamExt,
-    future::Map,
-    stream::{ForEach, SplitSink, SplitStream},
-};
+mod account_manager;
+use crate::chat_server::account_manager::AccountManager;
+
 use log::{debug, error, info};
 use protocol::error::Error;
 use protocol::*;
-use std::{
-    collections::HashMap,
-    net::{Ipv4Addr, SocketAddr},
-    sync::{Arc, RwLock},
-    time::SystemTime,
-};
+use std::sync::{Arc, RwLock};
+use tokio::task::JoinError;
 use tokio::{
     net::{TcpListener, TcpStream, ToSocketAddrs},
-    sync::Mutex,
     task::JoinHandle,
 };
-use tokio::{
-    sync::mpsc::{self, Receiver, Sender},
-    task::JoinError,
-};
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, accept_async, connect_async,
-    tungstenite::{self, Utf8Bytes, client::IntoClientRequest},
+    accept_async,
+    tungstenite::{self, Utf8Bytes},
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-struct AccountInfo {
-    username: String,
-    password: String,
-    ip_address: Option<SocketAddr>,
-    token: Option<String>,
-}
-
 pub struct ChatServer {
-    connections: Arc<RwLock<HashMap<String, AccountInfo>>>,
+    account_manager: AccountManager,
     cancellation_token: CancellationToken,
     listen_join_handle: Option<JoinHandle<()>>,
 }
@@ -44,7 +26,7 @@ pub struct ChatServer {
 impl ChatServer {
     pub fn new() -> Self {
         Self {
-            connections: Arc::new(RwLock::new(HashMap::new())),
+            account_manager: AccountManager::new(),
             cancellation_token: CancellationToken::new(),
             listen_join_handle: None,
         }
@@ -56,7 +38,7 @@ impl ChatServer {
     {
         self.listen_join_handle = Some(tokio::spawn(listen_handler(
             address,
-            self.connections.clone(),
+            self.account_manager.clone(),
             self.cancellation_token.clone(),
         )));
 
@@ -92,7 +74,7 @@ impl ChatServer {
 
 async fn listen_handler<A>(
     address: A,
-    connections: Arc<RwLock<HashMap<String, AccountInfo>>>,
+    account_manager: AccountManager,
     cancellation_token: CancellationToken,
 ) where
     A: ToSocketAddrs,
@@ -106,7 +88,7 @@ async fn listen_handler<A>(
                 if let Ok((tcp_stream, _)) = listener.accept().await {
                     connection_join_handles.push(tokio::spawn(connection_handler(
                         tcp_stream,
-                        connections.clone(),
+                        account_manager.clone(),
                         cancellation_token.child_token(),
                     )));
                 }
@@ -124,13 +106,12 @@ async fn listen_handler<A>(
 
 async fn connection_handler(
     tcp_stream: TcpStream,
-    connections: Arc<RwLock<HashMap<String, AccountInfo>>>,
+    account_manager: AccountManager,
     cancellation_token: CancellationToken,
 ) {
-    let ip_address = match tcp_stream.peer_addr() {
+    match tcp_stream.peer_addr() {
         Ok(ip_address) => {
             info!("connection_handler: Client connected from {:?}", ip_address);
-            ip_address
         }
         Err(err) => {
             error!("connection_handler: {}", err);
@@ -146,89 +127,188 @@ async fn connection_handler(
         }
     };
 
+    let split_stream = ws_stream.split();
+    let mut tx_stream = split_stream.0;
+    let mut rx_stream = split_stream.1;
+
     loop {
-        tokio::select! {
-            _ = cancellation_token.cancelled() => return,
-            rx_result = ws_stream.next() => {
-                if rx_result.is_none() {
-                    break;
-                }
+        /*tokio::select! {
+        _ = cancellation_token.cancelled() => return,
+        rx_result = ws_stream.next() => {*/
+        let rx_result = rx_stream.next().await;
 
-                // Process websocket data
-                match rx_result.unwrap() {
-                    Ok(tungstenite::Message::Text(text)) => {
-                        debug!("connection_handler: Recv: {}", text);
+        if rx_result.is_none() {
+            break;
+        }
 
-                        // Deserialize received message
-                        match serde_json::from_str::<Message>(text.as_str()) {
-                            Ok(message) => match message {
-                                Message::UserRegisterRequest(user_register_req) => {
-                                    let user_register_res = match connections.write() {
-                                        Ok(mut write_guard) => match write_guard.insert(
-                                            user_register_req.username.clone(),
-                                                AccountInfo {
-                                                    username: user_register_req.username,
-                                                    password: user_register_req.password,
-                                                    ip_address: Some(ip_address),
-                                                    token: None
-                                                }
-                                            ) {
-                                            Some(_) => UserRegisterResponse { error: None },
-                                            None => UserRegisterResponse { error: Some(String::from("Could not create account")) },
-                                        }
-                                        Err(err) => UserRegisterResponse { error: Some(err.to_string()) }
-                                    };
+        // Process websocket data
+        match rx_result.unwrap() {
+            Ok(tungstenite::Message::Text(text)) => {
+                debug!("connection_handler: Recv: {}", text);
 
-                                    // Send response
-                                    if let Err(err) = ws_stream
-                                        .send(tungstenite::Message::Text(Utf8Bytes::from(
-                                            serde_json::to_string(&Message::UserRegisterResponse(user_register_res)).unwrap(),
-                                        )))
-                                        .await
-                                    {
-                                        error!("connection_handler: {}", err);
-                                    }
-                                }
-                                Message::UserLoginRequest(user_login_req) => {
-                                    let user_login_res = match connections.write() {
-                                        Ok(mut write_guard) => match write_guard.get_mut(&user_login_req.username) {
-                                                Some(account_info) => {
-                                                    account_info.token = Some(Uuid::new_v4().to_string());
-                                                    UserLoginResponse {token: account_info.token.clone(), error:None }
-                                                },
-                                                None => UserLoginResponse { token: None, error: Some(String::from("Invalid credentials")) },
-                                            },
-                                        Err(err) => UserLoginResponse { token: None, error: Some(err.to_string()) },
-                                    };
+                // Deserialize received message
+                match serde_json::from_str::<Message>(text.as_str()) {
+                    Ok(message) => match message {
+                        Message::UserRegisterRequest(user_register_req) => {
+                            // TODO: AccountManager::create_account()
 
-                                    // Send response
-                                    if let Err(err) = ws_stream
-                                        .send(tungstenite::Message::Text(Utf8Bytes::from(
-                                            serde_json::to_string(&Message::UserLoginResponse(user_login_res)).unwrap(),
-                                        )))
-                                        .await
-                                    {
-                                        error!("connection_handler: {}", err);
-                                    }
-                                }
-                                Message::ChatMessageRequest(chat_msg_req) => {}
-                                _ => {}
-                            },
-                            Err(err) => error!("connection_handler: {}", err),
+                            // Send response
+                            if let Err(err) = tx_stream
+                                .send(tungstenite::Message::Text(Utf8Bytes::from(
+                                    serde_json::to_string(&Message::UserRegisterResponse(
+                                        user_register_res,
+                                    ))
+                                    .unwrap(),
+                                )))
+                                .await
+                            {
+                                error!("connection_handler: {}", err);
+                            }
                         }
-                    }
-                    Ok(tungstenite::Message::Close(_)) => {
-                        info!("connection_handler: Client closed connection");
-                        break;
-                    }
-                    Err(e) => {
-                        error!("connection_handler: {}", e);
-                        break;
-                    }
-                    _ => {} // Ignore other message types
+                        Message::UserLoginRequest(user_login_req) => {
+                            let user_login_res = match accounts.write() {
+                                Ok(mut accounts) => {
+                                    match accounts.get_mut(&user_login_req.username) {
+                                        Some(account) => {
+                                            // Check if password is valid
+                                            if account.password == user_login_req.password {
+                                                let new_token = Uuid::new_v4().to_string();
+
+                                                match sessions.write() {
+                                                    // Create new session
+                                                    Ok(mut sessions) => match sessions.insert(
+                                                        new_token.clone(),
+                                                        Session {
+                                                            username: user_login_req
+                                                                .username
+                                                                .clone(),
+                                                            ws_tx_stream: Arc::new(RwLock::new(
+                                                                tx_stream,
+                                                            )),
+                                                        },
+                                                    ) {
+                                                        // Could not create session (Session already exists)
+                                                        Some(_) => UserLoginResponse {
+                                                            session_token: None,
+                                                            error: Some(String::from(
+                                                                "Could not create account",
+                                                            )),
+                                                        },
+                                                        // Successfully created session
+                                                        None => UserLoginResponse {
+                                                            session_token: Some(new_token),
+                                                            error: None,
+                                                        },
+                                                    },
+                                                    // Could not create session (RwLock poisoned)
+                                                    Err(err) => UserLoginResponse {
+                                                        session_token: None,
+                                                        error: Some(err.to_string()),
+                                                    },
+                                                }
+                                            } else {
+                                                // Password is invalid
+                                                UserLoginResponse {
+                                                    session_token: None,
+                                                    error: Some(String::from(
+                                                        "Invalid credentials",
+                                                    )),
+                                                }
+                                            }
+                                        }
+                                        // Username is invalid
+                                        None => UserLoginResponse {
+                                            session_token: None,
+                                            error: Some(String::from("Invalid credentials")),
+                                        },
+                                    }
+                                }
+                                Err(err) => UserLoginResponse {
+                                    session_token: None,
+                                    error: Some(err.to_string()),
+                                },
+                            };
+
+                            // Send response
+                            if let Err(err) = ws_stream
+                                .send(tungstenite::Message::Text(Utf8Bytes::from(
+                                    serde_json::to_string(&Message::UserLoginResponse(
+                                        user_login_res,
+                                    ))
+                                    .unwrap(),
+                                )))
+                                .await
+                            {
+                                error!("connection_handler: {}", err);
+                            }
+                        }
+                        Message::ChatMessageRequest(chat_msg_req) => {
+                            let chat_msg_res = match sessions.read() {
+                                // Get account by session token
+                                Ok(sessions) => match sessions.get(&chat_msg_req.session_token) {
+                                    // User is authenticated, continue
+                                    Some(session) => match accounts.read() {
+                                        Ok(accounts) => {
+                                            match accounts.get(&chat_msg_req.dest_user) {
+                                                // TODO: forward message to dest_user
+                                                Some(account) => {
+                                                    ChatMessageResponse { error: None }
+                                                }
+
+                                                // User does not exist
+                                                None => ChatMessageResponse {
+                                                    error: Some(String::from(
+                                                        "User does not exist",
+                                                    )),
+                                                },
+                                            }
+                                        }
+                                        // Could not get account (RwLock poisoned)
+                                        Err(err) => ChatMessageResponse {
+                                            error: Some(err.to_string()),
+                                        },
+                                    },
+                                    // Could not get account (Session key not assigned)
+                                    None => ChatMessageResponse {
+                                        error: Some(String::from("Session not found")),
+                                    },
+                                },
+                                // Could not get session (RwLock poisoned)
+                                Err(err) => ChatMessageResponse {
+                                    error: Some(err.to_string()),
+                                },
+                            };
+
+                            // Send response
+                            if let Err(err) = ws_stream
+                                .send(tungstenite::Message::Text(Utf8Bytes::from(
+                                    serde_json::to_string(&Message::ChatMessageResponse(
+                                        chat_msg_res,
+                                    ))
+                                    .unwrap(),
+                                )))
+                                .await
+                            {
+                                error!("connection_handler: {}", err);
+                            }
+                        }
+                        _ => {}
+                    },
+                    Err(err) => error!("connection_handler: {}", err),
                 }
             }
+            Ok(tungstenite::Message::Close(_)) => {
+                info!("connection_handler: Client closed connection");
+                break;
+            }
+            Err(e) => {
+                error!("connection_handler: {}", e);
+                break;
+            }
+            _ => {} // Ignore other message types
         }
+        //}
+        //}
     }
 
     info!("connection_handler: Shutting down");

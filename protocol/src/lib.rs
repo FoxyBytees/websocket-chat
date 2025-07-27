@@ -33,14 +33,14 @@ pub struct UserLoginRequest {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UserLoginResponse {
-    pub token: Option<String>,
+    pub session_token: Option<String>,
     pub error: Option<String>,
 }
 
 // MessageRequest gets converted into Message on server
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ChatMessageRequest {
-    pub token: String,
+    pub session_token: String,
     pub send_time: SystemTime,
     pub dest_user: String,
     pub content: String,

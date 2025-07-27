@@ -21,7 +21,7 @@ impl std::fmt::Display for Error {
             Error::TokioMPSC(err) => write!(f, "Tokio MPSC error: {}", err),
             Error::Tungstenite(err) => write!(f, "Tungstenite error: {}", err),
             Error::SerdeJSON(err) => write!(f, "Serde_JSON error: {}", err),
-            Error::ServerError(err) => write!(f, "Internal Server Error: {}", err),
+            Error::ServerError(err) => write!(f, "Server Error: {}", err),
             Error::Connected => write!(f, "Connected: Please disconnect first"),
             Error::Disconnected => write!(f, "Disconnected: Please connect first"),
             Error::Unauthenticated => write!(f, "Unauthenticated: Please login first"),

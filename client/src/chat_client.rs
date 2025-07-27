@@ -152,7 +152,7 @@ impl ChatClient {
             Some(Ok(Message::UserLoginResponse(user_login_res))) => {
                 if let Some(desc) = user_login_res.error {
                     Err(Error::ServerError(desc))
-                } else if let Some(token) = user_login_res.token {
+                } else if let Some(token) = user_login_res.session_token {
                     self.token = Some(token);
                     Ok(self)
                 } else {
@@ -179,7 +179,7 @@ impl ChatClient {
         let token = self.token.as_ref().unwrap();
 
         let chat_msg_req = ChatMessageRequest {
-            token: token.clone(),
+            session_token: token.clone(),
             dest_user: String::from(dest_user),
             send_time: SystemTime::now(),
             content: String::from(message),
