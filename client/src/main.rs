@@ -1,5 +1,5 @@
 mod chat_client;
-use crate::chat_client::ChatClient;
+use crate::chat_client::chat_client::ChatClient;
 use chrono::{DateTime, Local};
 use colored::*;
 
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     chat_client.login("Foxy", "TestPW").await?;
 
-    for _ in 0..1 {
+    for _ in 0..10 {
         chat_client.message("Foxy", "TestMSG").await?;
     }
 

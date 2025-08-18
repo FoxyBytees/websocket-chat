@@ -1,9 +1,9 @@
+use crate::chat_client::client_error::ClientError;
 use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
 use log::{debug, error, info};
-use protocol::error::Error;
 use protocol::*;
 use std::time::SystemTime;
 use tokio::{net::TcpStream, sync::oneshot, task::JoinHandle};
@@ -15,13 +15,12 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async,
     tungstenite::{self, client::IntoClientRequest},
 };
-
 pub struct ChatClient {
     chat_msg_join_handle: Option<JoinHandle<()>>,
     tx_join_handle: Option<JoinHandle<()>>,
     rx_join_handle: Option<JoinHandle<()>>,
     to_tx_handler: Option<mpsc::Sender<Message>>,
-    from_handler: Option<mpsc::Receiver<Result<Message, Error>>>,
+    from_handler: Option<mpsc::Receiver<Result<Message, ClientError>>>,
     token: Option<String>,
 }
 
@@ -37,13 +36,17 @@ impl ChatClient {
         }
     }
 
-    pub async fn connect<R, F>(&mut self, request: R, on_receive: F) -> Result<&mut Self, Error>
+    pub async fn connect<R, F>(
+        &mut self,
+        request: R,
+        on_receive: F,
+    ) -> Result<&mut Self, ClientError>
     where
         R: IntoClientRequest + Unpin,
-        F: Fn(ChatMessage) + std::marker::Send + 'static,
+        F: Fn(ChatMessage) + Send + 'static,
     {
         if !self.is_done() {
-            return Err(Error::Connected);
+            return Err(ClientError::Connected);
         }
 
         let ws_stream = connect_async(request).await?.0;
@@ -54,7 +57,7 @@ impl ChatClient {
         let (close_rx_handler, rx_close_signal) = oneshot::channel::<()>();
 
         let (to_tx_handler, from_method) = mpsc::channel::<Message>(32);
-        let (to_method, from_handler) = mpsc::channel::<Result<Message, Error>>(32);
+        let (to_method, from_handler) = mpsc::channel::<Result<Message, ClientError>>(32);
         let (to_chat_msg_handler, chat_msg_receiver) = mpsc::channel::<Message>(32);
 
         self.from_handler = Some(from_handler);
@@ -82,9 +85,9 @@ impl ChatClient {
         Ok(self)
     }
 
-    pub async fn disconnect(&mut self) -> Result<&mut Self, Error> {
+    pub async fn disconnect(&mut self) -> Result<&mut Self, ClientError> {
         if self.is_done() {
-            return Err(Error::Disconnected);
+            return Err(ClientError::Disconnected);
         }
 
         let to_tx_handler = self.to_tx_handler.clone().unwrap();
@@ -95,14 +98,18 @@ impl ChatClient {
         match from_handler.recv().await {
             Some(Ok(Message::Disconnect)) => Ok(self),
             Some(Err(err)) => Err(err),
-            Some(_) => Err(Error::InvalidMessage),
-            None => Err(Error::InvalidMessage),
+            Some(_) => Err(ClientError::InvalidMessage),
+            None => Err(ClientError::InvalidMessage),
         }
     }
 
-    pub async fn register(&mut self, username: &str, password: &str) -> Result<&mut Self, Error> {
+    pub async fn register(
+        &mut self,
+        username: &str,
+        password: &str,
+    ) -> Result<&mut Self, ClientError> {
         if self.is_done() {
-            return Err(Error::Disconnected);
+            return Err(ClientError::Disconnected);
         }
 
         let to_tx_handler = self.to_tx_handler.clone().unwrap();
@@ -120,20 +127,24 @@ impl ChatClient {
         match from_handler.recv().await {
             Some(Ok(Message::UserRegisterResponse(user_register_res))) => {
                 if let Some(desc) = user_register_res.error {
-                    Err(Error::ServerError(desc))
+                    Err(ClientError::ServerError(desc))
                 } else {
                     Ok(self)
                 }
             }
             Some(Err(err)) => Err(err),
-            Some(_) => Err(Error::InvalidMessage),
-            None => Err(Error::InvalidMessage),
+            Some(_) => Err(ClientError::InvalidMessage),
+            None => Err(ClientError::InvalidMessage),
         }
     }
 
-    pub async fn login(&mut self, username: &str, password: &str) -> Result<&mut Self, Error> {
+    pub async fn login(
+        &mut self,
+        username: &str,
+        password: &str,
+    ) -> Result<&mut Self, ClientError> {
         if self.is_done() {
-            return Err(Error::Disconnected);
+            return Err(ClientError::Disconnected);
         }
 
         let to_tx_handler = self.to_tx_handler.clone().unwrap();
@@ -151,27 +162,31 @@ impl ChatClient {
         match from_handler.recv().await {
             Some(Ok(Message::UserLoginResponse(user_login_res))) => {
                 if let Some(desc) = user_login_res.error {
-                    Err(Error::ServerError(desc))
+                    Err(ClientError::ServerError(desc))
                 } else if let Some(token) = user_login_res.session_token {
                     self.token = Some(token);
                     Ok(self)
                 } else {
-                    Err(Error::InvalidMessage)
+                    Err(ClientError::InvalidMessage)
                 }
             }
             Some(Err(err)) => Err(err),
-            Some(_) => Err(Error::InvalidMessage),
-            None => Err(Error::InvalidMessage),
+            Some(_) => Err(ClientError::InvalidMessage),
+            None => Err(ClientError::InvalidMessage),
         }
     }
 
-    pub async fn message(&mut self, dest_user: &str, message: &str) -> Result<&mut Self, Error> {
+    pub async fn message(
+        &mut self,
+        dest_user: &str,
+        message: &str,
+    ) -> Result<&mut Self, ClientError> {
         if self.is_done() {
-            return Err(Error::Disconnected);
+            return Err(ClientError::Disconnected);
         }
 
         if self.token.is_none() {
-            return Err(Error::Unauthenticated);
+            return Err(ClientError::Unauthenticated);
         }
 
         let to_tx_handler = self.to_tx_handler.clone().unwrap();
@@ -192,14 +207,14 @@ impl ChatClient {
         match from_handler.recv().await {
             Some(Ok(Message::ChatMessageResponse(chat_msg_res))) => {
                 if let Some(desc) = chat_msg_res.error {
-                    Err(Error::ServerError(desc))
+                    Err(ClientError::ServerError(desc))
                 } else {
                     Ok(self)
                 }
             }
             Some(Err(err)) => Err(err),
-            Some(_) => Err(Error::InvalidMessage),
-            None => Err(Error::InvalidMessage),
+            Some(_) => Err(ClientError::InvalidMessage),
+            None => Err(ClientError::InvalidMessage),
         }
     }
 
@@ -249,7 +264,7 @@ async fn tx_handler(
     mut tx_close_signal: oneshot::Receiver<()>,
     close_rx_handler: oneshot::Sender<()>,
     mut from_method: mpsc::Receiver<Message>,
-    to_method: mpsc::Sender<Result<Message, Error>>,
+    to_method: mpsc::Sender<Result<Message, ClientError>>,
 ) {
     loop {
         tokio::select! {
@@ -273,7 +288,7 @@ async fn tx_handler(
                             }
                             Err(err) => {
                                 // Error while closing, notify method
-                                if let Err(err) = to_method.send(Err(Error::Tungstenite(err))).await {
+                                if let Err(err) = to_method.send(Err(ClientError::Tungstenite(err))).await {
                                     error!("tx_handler: {}", err);
                                 }
                             }
@@ -294,7 +309,7 @@ async fn tx_handler(
 
                         // Sending message to server
                         if let Err(err) = tx_stream.send(message).await {
-                            if let Err(err) = to_method.send(Err(Error::Tungstenite(err))).await {
+                            if let Err(err) = to_method.send(Err(ClientError::Tungstenite(err))).await {
                                 error!("tx_handler: {}", err); // Error while writing to tx_stream, notify method
                             }
                             break;
@@ -312,7 +327,7 @@ async fn rx_handler(
     mut rx_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     mut rx_close_signal: oneshot::Receiver<()>,
     close_tx_handler: oneshot::Sender<()>,
-    to_method: mpsc::Sender<Result<Message, Error>>,
+    to_method: mpsc::Sender<Result<Message, ClientError>>,
     to_chat_msg_handler: mpsc::Sender<Message>,
 ) {
     loop {
