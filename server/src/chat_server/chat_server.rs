@@ -1,15 +1,15 @@
 use crate::chat_server::account_manager::account_manager::AccountManager;
 use log::{debug, error, info};
-use protocol::{Message};
+use protocol::Message;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::*;
+use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::{
     net::{TcpListener, TcpStream, ToSocketAddrs},
     task::JoinHandle,
 };
-use tokio::sync::mpsc;
 use tokio_tungstenite::{
     accept_async,
     tungstenite::{self, Utf8Bytes},
@@ -18,16 +18,16 @@ use tokio_util::sync::CancellationToken;
 
 pub struct ChatServer {
     account_manager: AccountManager,
-    cancellation_token: CancellationToken,
     listen_join_handle: Option<JoinHandle<()>>,
+    cancellation_token: CancellationToken,
 }
 
 impl ChatServer {
     pub fn new() -> Self {
         Self {
             account_manager: AccountManager::new(),
-            cancellation_token: CancellationToken::new(),
             listen_join_handle: None,
+            cancellation_token: CancellationToken::new(),
         }
     }
 
@@ -125,7 +125,10 @@ async fn connection_handler(
     let mut ws_stream = match accept_async(tcp_stream).await {
         Ok(ws_stream) => ws_stream,
         Err(err) => {
-            error!("Error during the WebSocket handshake: {}", err);
+            error!(
+                "connection_handler: Error during WebSocket handshake: {}",
+                err
+            );
             return;
         }
     };
@@ -136,13 +139,9 @@ async fn connection_handler(
         tokio::select! {
             _ = cancellation_token.cancelled() => return,
             rx_result = ws_stream.next() => {
-                if rx_result.is_none() {
-                    break;
-                }
-
                 // Process websocket data
-                match rx_result.unwrap() {
-                    Ok(tungstenite::Message::Text(text)) => {
+                match rx_result {
+                    Some(Ok(tungstenite::Message::Text(text))) => {
                         debug!("connection_handler: Recv: {}", text);
 
                         // Deserialize received message
@@ -212,15 +211,22 @@ async fn connection_handler(
                                         Ok(src_user) => {
                                             match account_manager.get_sender_by_username(&chat_msg_req.dest_user).await {
                                                 Ok(sender) => {
-                                                    match sender.send(Message::ChatMessage(
-                                                        ChatMessage {
-                                                            src_user,
-                                                            send_time: chat_msg_req.send_time,
-                                                            content: chat_msg_req.content,
-                                                        },
-                                                    )).await {
-                                                        Ok(_) => ChatMessageResponse {
-                                                            error: None,
+                                                    let chat_msg = Message::ChatMessage(
+                                                        ChatMessage::from_request(chat_msg_req, src_user)
+                                                    );
+
+                                                    match sender.send(chat_msg.clone()).await {
+                                                        Ok(_) => match to_my_user.send(chat_msg).await {
+                                                            Ok(_) => ChatMessageResponse {
+                                                                    error: None,
+                                                                },
+                                                            Err(err) => {
+                                                                error!("connection_handler: {}", err);
+
+                                                                ChatMessageResponse {
+                                                                    error: Some(err.to_string()),
+                                                                }
+                                                            }
                                                         },
                                                         Err(err) => {
                                                             error!("connection_handler: {}", err);
@@ -265,15 +271,16 @@ async fn connection_handler(
                             Err(err) => error!("connection_handler: {}", err),
                         }
                     }
-                    Ok(tungstenite::Message::Close(_)) => {
+                    Some(Ok(tungstenite::Message::Close(_))) => {
                         info!("connection_handler: Client closed connection");
                         break;
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         error!("connection_handler: {}", e);
                         break;
                     }
-                    _ => {} // Ignore other message types
+                    None => break,
+                    _ => debug!("connection_handler: Received unknown message type, ignoring") // Ignore other message types
                 }
             },
             message = from_other_user.recv() => {
@@ -287,7 +294,7 @@ async fn connection_handler(
                             error!("connection_handler: {}", err);
                         }
                     },
-                    _ => debug!("chat_msg_handler: Recv: Unknown message type, ignoring"), // Ignore unknown message types
+                    _ => debug!("chat_msg_handler: Received unknown message type, ignoring"), // Ignore unknown message types
                 }
             }
         }
