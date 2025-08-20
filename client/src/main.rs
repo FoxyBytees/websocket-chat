@@ -1,4 +1,5 @@
 mod chat_client;
+
 use crate::chat_client::chat_client::ChatClient;
 use chrono::{DateTime, Local};
 use colored::*;
