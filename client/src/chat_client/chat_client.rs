@@ -272,7 +272,7 @@ async fn tx_handler(
                     Some(message) => {
                         // Serialize message to be sent
                         let json_string = serde_json::to_string(&message).unwrap();
-                        debug!("tx_handler: Send: {}", json_string);
+                        debug!("tx_handler: send: {}", json_string);
                         let message = tungstenite::Message::text(json_string);
 
                         // Sending message to server
@@ -289,7 +289,7 @@ async fn tx_handler(
         }
     }
 
-    info!("tx_handler: Shutting down");
+    info!("tx_handler: shutting down");
 }
 
 async fn rx_handler<F>(
@@ -306,7 +306,7 @@ async fn rx_handler<F>(
             received = rx_stream.next() => {
                 match received {
                     Some(Ok(tungstenite::Message::Text(text))) => {
-                        debug!("rx_handler: Recv: {}", text);
+                        debug!("rx_handler: recv: {}", text);
 
                         // Deserialize received message
                         match serde_json::from_slice::<Message>(text.as_bytes()) {
@@ -321,7 +321,7 @@ async fn rx_handler<F>(
                         }
                     }
                     Some(Ok(tungstenite::Message::Close(_))) => {
-                        debug!("rx_handler: Received CloseFrame");
+                        debug!("rx_handler: received CloseFrame");
                         break;
                     }
                     Some(Err(err)) => {
@@ -329,11 +329,11 @@ async fn rx_handler<F>(
                         break;
                     }
                     None => break,
-                    _ => debug!("rx_handler: Received unknown message type, ignoring"), // Ignore unknown message types
+                    _ => debug!("rx_handler: received unknown message type, ignoring"), // Ignore unknown message types
                 }
             }
         }
     }
 
-    info!("rx_handler: Shutting down");
+    info!("rx_handler: shutting down");
 }
