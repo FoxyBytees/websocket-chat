@@ -1,10 +1,11 @@
-use crate::chat_server::account_manager::account_manager::AccountManager;
+use std::sync::Arc;
+use crate::chat_server::account_manager::account_manager::{Account, AccountManager};
 use log::{debug, error, info};
 use protocol::Message;
 
 use futures_util::{SinkExt, StreamExt};
 use protocol::*;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinError;
 use tokio::{
     net::{TcpListener, TcpStream, ToSocketAddrs},
@@ -15,6 +16,8 @@ use tokio_tungstenite::{
     tungstenite::{self, Utf8Bytes},
 };
 use tokio_util::sync::CancellationToken;
+use persistence::CRUD;
+use persistence::crud_error::CRUDError;
 
 pub struct ChatServer {
     account_manager: AccountManager,
@@ -23,9 +26,9 @@ pub struct ChatServer {
 }
 
 impl ChatServer {
-    pub fn new() -> Self {
+    pub fn new(database: Arc<RwLock<dyn CRUD<String, Account, CRUDError>>>) -> Self {
         Self {
-            account_manager: AccountManager::new(),
+            account_manager: AccountManager::new(database),
             listen_join_handle: None,
             cancellation_token: CancellationToken::new(),
         }
@@ -114,7 +117,7 @@ async fn connection_handler(
 ) {
     match tcp_stream.peer_addr() {
         Ok(ip_address) => {
-            info!("connection_handler: Client connected from {:?}", ip_address);
+            info!("connection_handler: client connected from {:?}", ip_address);
         }
         Err(err) => {
             error!("connection_handler: {}", err);
@@ -126,7 +129,7 @@ async fn connection_handler(
         Ok(ws_stream) => ws_stream,
         Err(err) => {
             error!(
-                "connection_handler: Error during WebSocket handshake: {}",
+                "connection_handler: error during WebSocket handshake: {}",
                 err
             );
             return;
@@ -134,6 +137,7 @@ async fn connection_handler(
     };
 
     let (to_my_user, mut from_other_user) = mpsc::channel::<Message>(32);
+    let mut session_token = String::new();
 
     loop {
         tokio::select! {
@@ -142,7 +146,7 @@ async fn connection_handler(
                 // Process websocket data
                 match rx_result {
                     Some(Ok(tungstenite::Message::Text(text))) => {
-                        debug!("connection_handler: Recv: {}", text);
+                        debug!("connection_handler: recv: {}", text);
 
                         // Deserialize received message
                         match serde_json::from_str::<Message>(text.as_str()) {
@@ -179,9 +183,13 @@ async fn connection_handler(
                                         user_login_req.password,
                                         to_my_user.clone()
                                     ).await {
-                                        Ok(token) => UserLoginResponse {
-                                            session_token: Some(token),
-                                            error: None,
+                                        Ok(token) => {
+                                            session_token = token.clone();
+
+                                            UserLoginResponse {
+                                                session_token: Some(token),
+                                                error: None,
+                                            }
                                         },
                                         Err(err) => {
                                             error!("connection_handler: {}", err);
@@ -272,7 +280,7 @@ async fn connection_handler(
                         }
                     }
                     Some(Ok(tungstenite::Message::Close(_))) => {
-                        info!("connection_handler: Client closed connection");
+                        info!("connection_handler: client closed connection");
                         break;
                     }
                     Some(Err(e)) => {
@@ -280,7 +288,7 @@ async fn connection_handler(
                         break;
                     }
                     None => break,
-                    _ => debug!("connection_handler: Received unknown message type, ignoring") // Ignore other message types
+                    _ => debug!("connection_handler: received unknown message type, ignoring") // Ignore other message types
                 }
             },
             message = from_other_user.recv() => {
@@ -294,11 +302,17 @@ async fn connection_handler(
                             error!("connection_handler: {}", err);
                         }
                     },
-                    _ => debug!("chat_msg_handler: Received unknown message type, ignoring"), // Ignore unknown message types
+                    _ => debug!("chat_msg_handler: received unknown message type, ignoring"), // Ignore unknown message types
                 }
             }
         }
     }
 
-    info!("connection_handler: Shutting down");
+    if !session_token.is_empty(){
+        if let Err(err) = account_manager.remove_session(&session_token).await {
+            error!("connection_handler: {}", err);
+        }
+    }
+
+    info!("connection_handler: shutting down");
 }

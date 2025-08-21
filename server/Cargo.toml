@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 protocol = { path = "../protocol" }
+persistence = { path = "../persistence" }
 log = { version = "0.4.27" }
 env_logger = "0.11.8"
 futures-util = "0.3.31"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-tungstenite = { version = "0.27.0", features = ["rustls"] }
 tokio-util = "0.7.16"
-serde_json = "1.0.143"
 uuid = { version = "1.18.0", features = ["v4"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.143"

@@ -1,9 +1,8 @@
+use persistence::crud_error::CRUDError;
+
 #[derive(Debug)]
 pub enum AccountError {
-    AccountAlreadyExists,
-    SessionAlreadyExists,
-    AccountDoesntExist,
-    SessionDoesntExist,
+    CrudError(CRUDError),
     InvalidCredentials,
 }
 
@@ -11,11 +10,12 @@ pub enum AccountError {
 impl std::fmt::Display for AccountError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            AccountError::AccountAlreadyExists => write!(f, "account already exists"),
-            AccountError::SessionAlreadyExists => write!(f, "session already exists"),
-            AccountError::AccountDoesntExist => write!(f, "account does not exist"),
-            AccountError::SessionDoesntExist => write!(f, "session does not exist"),
+            AccountError::CrudError(err) => write!(f, "CRUD error: {}", err),
             AccountError::InvalidCredentials => write!(f, "wrong username/password"),
         }
     }
+}
+
+impl From<CRUDError> for AccountError {
+    fn from(err: CRUDError) -> Self { AccountError::CrudError(err) }
 }

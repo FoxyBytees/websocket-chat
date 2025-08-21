@@ -3,10 +3,14 @@ use std::{
     collections::HashMap,
     sync::Arc,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
+use persistence::CRUD;
+use persistence::crud_error::CRUDError;
 use protocol::Message;
 
+#[derive(Serialize, Deserialize)]
 pub struct Account {
     username: String,
     password: String,
@@ -18,42 +22,36 @@ pub struct Session {
 }
 
 pub struct AccountManager {
+    database: Arc<RwLock<dyn CRUD<String, Account, CRUDError>>>,
     accounts_by_username: Arc<RwLock<HashMap<String, Account>>>,
     senders_by_username: Arc<RwLock<HashMap<String, mpsc::Sender<Message>>>>,
     sessions_by_token: Arc<RwLock<HashMap<String, Session>>>,
 }
 
 impl AccountManager {
-    pub fn new() -> Self {
+    pub fn new(database: Arc<RwLock<dyn CRUD<String, Account, CRUDError>>>) -> Self {
         Self {
+            database,
             accounts_by_username: Arc::new(RwLock::new(HashMap::new())),
             senders_by_username: Arc::new(RwLock::new(HashMap::new())),
             sessions_by_token: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub fn load_accounts() {}
-
     pub async fn create_account(
         &mut self,
         username: String,
         password: String,
-    ) -> Result<(), AccountError> {
-        let mut write_guard = self.accounts_by_username.write().await;
-
-        match write_guard.insert(username.clone(), Account { username, password }) {
-            Some(_) => Err(AccountError::AccountAlreadyExists),
-            None => Ok(()),
-        }
+    ) -> Result<(), CRUDError> {
+        let mut write_lock = self.database.write().await;
+        write_lock.create(username.clone(), Account { username, password })?;
+        Ok(())
     }
 
-    pub async fn remove_account(&mut self, username: String) -> Result<(), AccountError> {
-        let mut write_guard = self.accounts_by_username.write().await;
-
-        match write_guard.remove(&username) {
-            Some(_) => Ok(()),
-            None => Err(AccountError::AccountDoesntExist),
-        }
+    pub async fn delete_account(&mut self, username: String) -> Result<(), CRUDError> {
+        let mut write_lock = self.database.write().await;
+        write_lock.delete(&username)?;
+        Ok(())
     }
 
     pub async fn create_session(
@@ -62,55 +60,48 @@ impl AccountManager {
         password: String,
         sender: mpsc::Sender<Message>,
     ) -> Result<String, AccountError> {
-        let read_guard = self.accounts_by_username.read().await;
+        let read_lock = self.database.read().await;
+        let account = read_lock.read(&username)?;
 
-        match read_guard.get(&username) {
-            None => Err(AccountError::InvalidCredentials),
-            Some(account) => {
-                if account.password == password {
-                    let token = Uuid::new_v4().to_string();
-                    let mut write_guard = self.sessions_by_token.write().await;
+        if account.password == password {
+            let token = Uuid::new_v4().to_string();
 
-                    match write_guard.insert(
-                        token.clone(),
-                        Session {
-                            username: username.clone(),
-                            token: token.clone(),
-                        },
+            match self.sessions_by_token.write().await.insert(
+                token.clone(),
+                Session {
+                    username: username.clone(),
+                    token: token.clone(),
+                },
+            ) {
+                Some(_) => Err(AccountError::from(CRUDError::AlreadyExists)),
+                None => {
+                    match self.senders_by_username.write().await.insert(
+                        username,
+                        sender
                     ) {
-                        Some(_) => Err(AccountError::SessionAlreadyExists),
-                        None => {
-                            let mut write_guard = self.senders_by_username.write().await;
-
-                            match write_guard.insert(
-                                username,
-                                sender
-                            ) {
-                                Some(_) => Err(AccountError::SessionAlreadyExists),
-                                None => Ok(token),
-                            }
-                        }
+                        Some(_) => Err(AccountError::from(CRUDError::AlreadyExists)),
+                        None => Ok(token),
                     }
-                } else {
-                    Err(AccountError::InvalidCredentials)
                 }
             }
+        } else {
+            Err(AccountError::InvalidCredentials)
         }
     }
 
-    pub async fn remove_session(&mut self, token: String) -> Result<(), AccountError> {
+    pub async fn remove_session(&mut self, token: &String) -> Result<(), AccountError> {
         let mut write_guard = self.sessions_by_token.write().await;
 
-        match write_guard.remove(&token) {
+        match write_guard.remove(token) {
             Some(session) => {
                 let mut write_guard = self.senders_by_username.write().await;
 
                 match write_guard.remove(&session.username) {
                     Some(_) => Ok(()),
-                    None => Err(AccountError::SessionDoesntExist),
+                    None => Err(AccountError::from(CRUDError::NotFound)),
                 }
             }
-            None => Err(AccountError::SessionDoesntExist),
+            None => Err(AccountError::from(CRUDError::NotFound)),
         }
     }
 
@@ -118,7 +109,7 @@ impl AccountManager {
         let read_guard = self.sessions_by_token.read().await;
 
         match read_guard.get(token) {
-            None => Err(AccountError::SessionDoesntExist),
+            None => Err(AccountError::from(CRUDError::NotFound)),
             Some(session) => Ok(session.username.clone()),
         }
     }
@@ -127,7 +118,7 @@ impl AccountManager {
         let read_guard = self.senders_by_username.read().await;
 
         match read_guard.get(username) {
-            None => Err(AccountError::SessionDoesntExist),
+            None => Err(AccountError::from(CRUDError::NotFound)),
             Some(sender) => Ok(sender.clone())
         }
     }
@@ -136,6 +127,7 @@ impl AccountManager {
 impl Clone for AccountManager {
     fn clone(&self) -> Self {
         Self {
+            database: self.database.clone(),
             accounts_by_username: self.accounts_by_username.clone(),
             senders_by_username: self.senders_by_username.clone(),
             sessions_by_token: self.sessions_by_token.clone(),
