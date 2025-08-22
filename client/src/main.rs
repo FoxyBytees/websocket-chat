@@ -3,16 +3,16 @@ mod chat_client;
 use crate::chat_client::chat_client::ChatClient;
 use chrono::{DateTime, Local};
 use colored::*;
-use std::{env};
 use std::io::{stdout, stdin, Write};
 use std::sync::{Arc,RwLock};
+use log::error;
 use protocol::ChatMessage;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = std::env::args().collect();
     let server_addr = args[1].clone();
     let username = Arc::new(RwLock::new(String::new()));
     let username_clone = username.clone();
@@ -80,34 +80,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match choice.trim() {
             "1" => {
-                chat_client.login(username.read().unwrap().trim(), password.trim()).await?;
-                break;
+                match chat_client.login(username.read().unwrap().trim(), password.trim()).await {
+                    Ok(_) => {
+                        let mut message = String::new();
+
+                        while message.trim() != "exit()" {
+                            print!("\x1B[2J\x1B[1;1H");
+                            print!("User to message: ");
+                            let mut to_user = String::new();
+                            stdout().flush().unwrap();
+                            stdin().read_line(&mut to_user)?;
+
+                            loop {
+                                stdin().read_line(&mut message)?;
+
+                                if message.trim() == "exit()" {
+                                    break
+                                }
+
+                                if let Err(err) = chat_client.message(to_user.trim(), message.trim()).await{
+                                    error!("{}", err);
+                                }
+
+                                message.clear();
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        error!("{}", err);
+                        break;
+                    },
+                }
             }
             "2" => {
                 chat_client.register(username.read().unwrap().trim(), password.trim()).await?;
+                username.write().unwrap().clear();
             }
             _ => {}
         }
     }
 
-    print!("\x1B[2J\x1B[1;1H");
-    print!("User to message: ");
-    let mut to_user = String::new();
-    stdout().flush().unwrap();
-    stdin().read_line(&mut to_user)?;
-
-    loop {
-        let mut message= String::new();
-
-        stdin().read_line(&mut message)?;
-
-        if message.trim() == "exit()" {
-            chat_client.disconnect().await?.wait_done().await?;
-            break;
-        }
-
-        chat_client.message(to_user.trim(), message.trim()).await?;
-    }
+    chat_client.disconnect().await?.wait_done().await?;
 
     Ok(())
 }
